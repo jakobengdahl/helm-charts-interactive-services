@@ -1,0 +1,54 @@
+name: Publish Helm charts to gh-pages
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package charts and build index.yaml
+        run: |
+          set -euo pipefail
+          BASE_URL="https://jakobengdahl.github.io/helm-charts-interactive-services"
+          mkdir -p public
+
+          if [ -f "index.html" ]; then
+            cp index.html public/
+          fi
+
+          mapfile -t CHART_DIRS < <(find . -type f -name Chart.yaml -not -path "./public/*" -printf '%h\n' | sort -u)
+
+          if [ "${#CHART_DIRS[@]}" -eq 0 ]; then
+            echo "No charts found; creating empty index.yaml"
+            helm repo index public --url "${BASE_URL}"
+          else
+            for d in "${CHART_DIRS[@]}"; do
+              echo "::group::Packaging $d"
+              helm lint "$d" || true
+              helm package "$d" -d public
+              echo "::endgroup::"
+            done
+            helm repo index public --url "${BASE_URL}"
+          fi
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./public
+          force_orphan: true
