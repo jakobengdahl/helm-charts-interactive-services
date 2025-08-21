@@ -5,11 +5,12 @@ on:
     branches: [ "main" ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  
 
     steps:
       - name: Checkout
@@ -18,18 +19,28 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
 
-      - name: Package charts and build index.yaml
+      - name: Prepare & package charts
+        shell: bash
         run: |
           set -euo pipefail
+
+          # Your GitHub Pages base URL
           BASE_URL="https://jakobengdahl.github.io/helm-charts-interactive-services"
+
           mkdir -p public
 
+          # Optional: keep your landing page if you have one
           if [ -f "index.html" ]; then
             cp index.html public/
           fi
 
+          # Add upstream repo that hosts library-chart (safe to keep even if deps use direct URLs)
+          helm repo add inseefrlab https://inseefrlab.github.io/helm-charts >/dev/null 2>&1 || true
+          helm repo update >/dev/null 2>&1 || true
+
+          # Find all charts (any directory that contains a Chart.yaml)
           mapfile -t CHART_DIRS < <(find . -type f -name Chart.yaml -not -path "./public/*" -printf '%h\n' | sort -u)
 
           if [ "${#CHART_DIRS[@]}" -eq 0 ]; then
@@ -38,10 +49,22 @@ jobs:
           else
             for d in "${CHART_DIRS[@]}"; do
               echo "::group::Packaging $d"
+
+              # Ensure dependencies are vendored into $d/charts/
+              # 'build' uses Chart.lock if present; fallback to 'update'
+              if ! helm dependency build "$d"; then
+                helm dependency update "$d"
+              fi
+
+              # Lint should not fail the pipeline
               helm lint "$d" || true
+
+              # Package the chart into ./public
               helm package "$d" -d public
               echo "::endgroup::"
             done
+
+            # Generate/merge index.yaml for the repo
             helm repo index public --url "${BASE_URL}"
           fi
 
@@ -49,6 +72,6 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: public
           publish_branch: gh-pages
-          publish_dir: ./public
           force_orphan: true
